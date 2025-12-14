@@ -92,6 +92,15 @@ enum ResourceLoader {
         }
         return try String(contentsOf: url, encoding: .utf8)
     }
+
+    static func loadDataResource(named name: String, ext: String) throws -> Data {
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
+            throw NSError(domain: "ResourceLoader", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Missing resource \(name).\(ext) in bundle"
+            ])
+        }
+        return try Data(contentsOf: url)
+    }
 }
 
 // MARK: - Build grid from CSV
@@ -207,6 +216,67 @@ final class PhraseDictionary: ObservableObject {
     }
 }
 
+// MARK: - Star Gauge color map (cell_id -> color)
+//
+// Add `xuanji_tu_cell_colors_v3.json` to your Xcode bundle (Copy Bundle Resources).
+//
+
+enum StarGaugeColor: String, Codable {
+    case red, green, black, purple, yellow
+
+    var background: Color {
+        switch self {
+        case .red: return .red
+        case .green: return .green
+        case .black: return .black
+        case .purple: return .purple
+        case .yellow: return .yellow
+        }
+    }
+
+    var text: Color {
+        switch self {
+        case .black, .purple, .red:
+            return .white
+        default:
+            return .black
+        }
+    }
+}
+
+final class StarGaugeColorMap: ObservableObject {
+    @Published private(set) var map: [String: StarGaugeColor] = [:]
+
+    func loadFromJSON(named name: String) {
+        do {
+            let data = try ResourceLoader.loadDataResource(named: name, ext: "json")
+            let raw = try JSONDecoder().decode([String: String].self, from: data)
+
+            var out: [String: StarGaugeColor] = [:]
+            out.reserveCapacity(raw.count)
+
+            for (k, v) in raw {
+                if let c = StarGaugeColor(rawValue: v) {
+                    out[k] = c
+                }
+            }
+            self.map = out
+        } catch {
+            print("Color map load error:", error)
+            self.map = [:]
+        }
+    }
+
+    /// JSON uses keys like "r01c01" ... "r29c29"
+    func cellId(r0: Int, c0: Int) -> String {
+        String(format: "r%02dc%02d", r0 + 1, c0 + 1)
+    }
+
+    func colorFor(r0: Int, c0: Int) -> StarGaugeColor {
+        map[cellId(r0: r0, c0: c0)] ?? .yellow
+    }
+}
+
 // MARK: - Selection logic (only horizontal/vertical contiguous)
 
 enum SelectionDirection {
@@ -255,6 +325,7 @@ func selectedChineseString(grid: XuanjiGrid, path: [GridPos], start: GridPos, en
 struct ContentView: View {
     @State private var grid: XuanjiGrid? = nil
     @StateObject private var phrases = PhraseDictionary()
+    @StateObject private var colorMap = StarGaugeColorMap()
 
     // Drag selection state
     @State private var startPos: GridPos? = nil
@@ -307,6 +378,7 @@ struct ContentView: View {
         GeometryReader { geo in
             let totalW = geo.size.width
             let size = min(cellSize, (totalW - 8) / CGFloat(grid.cols))
+            let effectiveH = CGFloat(grid.rows) * size
 
             VStack(spacing: 0) {
                 ForEach(0..<grid.rows, id: \.self) { r in
@@ -318,11 +390,21 @@ struct ContentView: View {
                             let ch = grid.chars[r][c]
                             let display = ch.isEmpty ? "·" : ch
 
+                            let sgColor = colorMap.colorFor(r0: r, c0: c)
+                            let baseBg = sgColor.background
+                            let baseText = sgColor.text
+
                             Text(display)
                                 .font(.system(size: size * 0.9, weight: .regular, design: .default))
                                 .frame(width: size, height: size)
-                                .foregroundStyle(ch.isEmpty ? .secondary : .primary)
-                                .background(isSelected ? Color.primary.opacity(0.15) : Color.clear)
+                                .foregroundStyle(ch.isEmpty ? .secondary : baseText)
+                                .background(baseBg)
+                                .overlay {
+                                    if isSelected {
+                                        // selection tint on top of the base color
+                                        Rectangle().fill(Color.white.opacity(0.20))
+                                    }
+                                }
                                 .overlay {
                                     if showGridLines {
                                         Rectangle()
@@ -332,18 +414,25 @@ struct ContentView: View {
                                 .overlay {
                                     if isCenter {
                                         RoundedRectangle(cornerRadius: 4)
-                                            .strokeBorder(Color.primary.opacity(0.8), lineWidth: 2.5)
+                                            .strokeBorder(Color.white.opacity(0.9), lineWidth: 2.5)
                                     }
                                 }
                         }
                     }
                 }
             }
+            .frame(width: CGFloat(grid.cols) * size, height: effectiveH, alignment: .topLeading)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        let pos = posFrom(point: value.location, in: geo.size, rows: grid.rows, cols: grid.cols)
+                        let pos = posFrom(
+                            point: value.location,
+                            in: geo.size,
+                            rows: grid.rows,
+                            cols: grid.cols,
+                            cell: size
+                        )
                         guard let pos else { return }
 
                         if startPos == nil {
@@ -359,7 +448,8 @@ struct ContentView: View {
                     }
             )
         }
-        .frame(height: 29 * cellSize)
+        // Keep a stable height; the content itself sizes to the computed `size`.
+        .frame(height: CGFloat(29) * cellSize)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -424,15 +514,15 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Coordinate mapping
+    // MARK: - Coordinate mapping (fixed: uses actual rendered cell size)
 
-    private func posFrom(point: CGPoint, in size: CGSize, rows: Int, cols: Int) -> GridPos? {
-        let cellW = size.width / CGFloat(cols)
-        let effectiveH = CGFloat(rows) * cellSize
-        let clampedY = min(max(point.y, 0), effectiveH - 1)
+    private func posFrom(point: CGPoint, in size: CGSize, rows: Int, cols: Int, cell: CGFloat) -> GridPos? {
+        let effectiveH = CGFloat(rows) * cell
+        let clampedX = min(max(point.x, 0), CGFloat(cols) * cell - 0.001)
+        let clampedY = min(max(point.y, 0), effectiveH - 0.001)
 
-        let c = Int(point.x / cellW)
-        let r = Int(clampedY / cellSize)
+        let c = Int(clampedX / cell)
+        let r = Int(clampedY / cell)
 
         guard r >= 0, r < rows, c >= 0, c < cols else { return nil }
         return GridPos(r: r, c: c)
@@ -448,7 +538,12 @@ struct ContentView: View {
                 ext: "csv"
             )
             self.grid = try XuanjiGridBuilder.fromCSVText(gridText, expectedSize: 29)
+
             phrases.loadFromCSV(named: "xuanji_phrases")
+
+            // IMPORTANT: Add `xuanji_tu_cell_colors_v3.json` to your bundle resources.
+            colorMap.loadFromJSON(named: "xuanji_tu_cell_colors_v3")
+
             self.loadError = nil
         } catch {
             self.grid = nil
@@ -475,10 +570,12 @@ private func makePreviewGrid() -> XuanjiGrid {
     return XuanjiGrid(rows: n, cols: n, chars: g)
 }
 
-#Preview("Xuanji Grid - Preview") {
-    ContentView_PreviewHost()
+#if DEBUG
+#Preview("Star Gauge - ContentView") {
+    ContentView()
         .padding()
 }
+#endif
 
 private struct ContentView_PreviewHost: View {
     @State private var injectedGrid = makePreviewGrid()
@@ -541,5 +638,3 @@ private struct PreviewGridView: View {
     }
 }
 #endif
-
-
