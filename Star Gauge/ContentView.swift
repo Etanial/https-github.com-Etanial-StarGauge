@@ -51,15 +51,12 @@ enum CSV {
                 row.append(field)
                 field = ""
             } else if (ch == "\n" || ch == "\r") && !inQuotes {
-                // Finish field
                 if ch == "\r" {
-                    // swallow optional \n after \r
                     let next = text.index(after: i)
                     if next < text.endIndex, text[next] == "\n" { i = next }
                 }
                 row.append(field)
                 field = ""
-                // only append non-empty rows
                 if !(row.count == 1 && row[0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                     rows.append(row)
                 }
@@ -71,7 +68,6 @@ enum CSV {
             i = text.index(after: i)
         }
 
-        // last field
         row.append(field)
         if !(row.count == 1 && row[0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
             rows.append(row)
@@ -123,12 +119,10 @@ enum XuanjiGridBuilder {
             Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
         }
 
-        // Header-based detection
         let headerHasRow = header.contains(where: { $0 == "row" || $0 == "r" || $0 == "行" })
         let headerHasCol = header.contains(where: { $0 == "col" || $0 == "c" || $0 == "列" })
         let headerHasChar = header.contains(where: { $0 == "char" || $0 == "ch" || $0 == "zi" || $0 == "字" })
 
-        // Infer cell-list if first *data* row looks like: int,int,something
         let firstData = table[1]
         let inferCellList = firstData.count >= 3 && isInt(firstData[0]) && isInt(firstData[1])
 
@@ -141,7 +135,6 @@ enum XuanjiGridBuilder {
 
             var grid = Array(repeating: Array(repeating: "", count: expectedSize), count: expectedSize)
 
-            // If header row isn't numeric, skip it; otherwise treat everything as data
             let headerLooksNumeric = table[0].count >= 2 && isInt(table[0][0]) && isInt(table[0][1])
             let dataRows: [[String]] = headerLooksNumeric ? table : Array(table.dropFirst())
 
@@ -151,7 +144,6 @@ enum XuanjiGridBuilder {
                 let c1 = Int(line[cIdx].trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                 let ch = line[chIdx].trimmingCharacters(in: .whitespacesAndNewlines)
 
-                // Assume CSV is 1-based (r15c15), convert to 0-based
                 let r = r1 - 1
                 let c = c1 - 1
                 if r >= 0, r < expectedSize, c >= 0, c < expectedSize {
@@ -162,7 +154,6 @@ enum XuanjiGridBuilder {
             return XuanjiGrid(rows: expectedSize, cols: expectedSize, chars: grid)
         }
 
-        // Otherwise treat as row-grid
         guard table.count >= expectedSize else {
             throw NSError(domain: "XuanjiGridBuilder", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Row-grid needs \(expectedSize) rows"])
@@ -206,7 +197,6 @@ final class PhraseDictionary: ObservableObject {
             }
             self.map = dict
         } catch {
-            // Safe to ignore if you haven't added a phrase CSV yet
             self.map = [:]
         }
     }
@@ -217,9 +207,6 @@ final class PhraseDictionary: ObservableObject {
 }
 
 // MARK: - Star Gauge color map (cell_id -> color)
-//
-// Add `xuanji_tu_cell_colors_v3.json` to your Xcode bundle (Copy Bundle Resources).
-//
 
 enum StarGaugeColor: String, Codable {
     case red, green, black, purple, yellow
@@ -295,7 +282,7 @@ func selectionPath(from start: GridPos, to end: GridPos) -> [GridPos] {
         let hi = max(start.r, end.r)
         return (lo...hi).map { GridPos(r: $0, c: c) }
     } else {
-        return [start] // not allowed diagonally; keep just start
+        return [start]
     }
 }
 
@@ -306,7 +293,6 @@ func selectionDirection(from start: GridPos, to end: GridPos) -> SelectionDirect
 }
 
 func selectedChineseString(grid: XuanjiGrid, path: [GridPos], start: GridPos, end: GridPos) -> String {
-    // Preserve user direction (L->R vs R->L, T->B vs B->T)
     let dir = selectionDirection(from: start, to: end)
     let ordered: [GridPos]
     switch dir {
@@ -320,43 +306,126 @@ func selectedChineseString(grid: XuanjiGrid, path: [GridPos], start: GridPos, en
     return ordered.map { grid.char(at: $0) }.joined()
 }
 
-// MARK: - View
+// MARK: - Splash View (UPDATED: shows full image + thinner/smaller/italic link, moved lower)
+
+struct SplashView: View {
+    let onExplore: () -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                // A) Always show the full image (no cropping). Letterbox if needed.
+                Color.black.ignoresSafeArea()
+
+                Image("splash_guqin")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+
+                Button(action: onExplore) {
+                    Text("Explore the Star Gauge")
+                        .font(.system(size: 17, weight: .light))
+                        .italic()
+                        .underline()
+                        .foregroundStyle(.white.opacity(0.92))
+                        .shadow(radius: 6)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                // moved DOWN a little (above her hand area)
+                .position(
+                    x: geo.size.width * 0.73,
+                    y: geo.size.height * 0.40
+                )
+                .accessibilityLabel("Explore the Star Gauge")
+                .accessibilityHint("Opens the Star Gauge grid")
+            }
+        }
+    }
+}
+
+// MARK: - Wrapper ContentView (Splash -> Main App)
 
 struct ContentView: View {
+    @State private var showSplash = true
+
+    var body: some View {
+        ZStack {
+            if showSplash {
+                SplashView {
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        showSplash = false
+                    }
+                }
+                .transition(.opacity)
+            } else {
+                StarGaugeMainView()
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
+// MARK: - Main App View (UPDATED: grid uses top ~60% with pinch-zoom + pan)
+
+struct StarGaugeMainView: View {
     @State private var grid: XuanjiGrid? = nil
     @StateObject private var phrases = PhraseDictionary()
     @StateObject private var colorMap = StarGaugeColorMap()
 
-    // Drag selection state
+    // Selection state
     @State private var startPos: GridPos? = nil
     @State private var currentPos: GridPos? = nil
     @State private var selectedPath: [GridPos] = []
 
     // UI
-    @State private var cellSize: CGFloat = 28
     @State private var showGridLines = true
-
-    // Debug / visibility
     @State private var loadError: String? = nil
 
-    var body: some View {
-        VStack(spacing: 12) {
-            header
+    // Zoom/Pan state
+    @State private var gridScale: CGFloat = 1.0
+    @State private var gridOffset: CGSize = .zero
+    @GestureState private var pinchScale: CGFloat = 1.0
+    @GestureState private var panDrag: CGSize = .zero
 
-            if let grid {
-                gridView(grid)
-                selectionPanel(grid)
-            } else if let loadError {
-                Text(loadError)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding()
-            } else {
-                ProgressView("Loading grid…")
-                    .task { await load() }
+    private let minScale: CGFloat = 1.0
+    private let maxScale: CGFloat = 6.0
+
+    var body: some View {
+        GeometryReader { outerGeo in
+            let totalH = outerGeo.size.height
+            let gridRegionH = totalH * 0.60
+
+            VStack(spacing: 12) {
+                header
+
+                if let grid {
+                    zoomableGrid(grid)
+                        .frame(height: gridRegionH)
+                        .background(Color.secondary.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
+                        )
+
+                    selectionPanel(grid)
+                } else if let loadError {
+                    Text(loadError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding()
+                } else {
+                    ProgressView("Loading grid…")
+                        .task { await load() }
+                }
             }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding()
     }
 
     private var header: some View {
@@ -364,7 +433,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("璇璣圖 Grid")
                     .font(.title2).bold()
-                Text("Drag to select 4+ characters horizontally or vertically.")
+                Text("Pinch to zoom • Drag to pan • Long-press then drag to select 4+ characters.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -374,88 +443,149 @@ struct ContentView: View {
         }
     }
 
-    private func gridView(_ grid: XuanjiGrid) -> some View {
+    // MARK: - Zoomable grid (top 60% area)
+
+    private func zoomableGrid(_ grid: XuanjiGrid) -> some View {
         GeometryReader { geo in
-            let totalW = geo.size.width
-            let size = min(cellSize, (totalW - 8) / CGFloat(grid.cols))
-            let effectiveH = CGFloat(grid.rows) * size
+            let viewport = geo.size
+            let side = min(viewport.width, viewport.height)
 
-            VStack(spacing: 0) {
-                ForEach(0..<grid.rows, id: \.self) { r in
-                    HStack(spacing: 0) {
-                        ForEach(0..<grid.cols, id: \.self) { c in
-                            let pos = GridPos(r: r, c: c)
-                            let isSelected = selectedPath.contains(pos)
-                            let isCenter = (r == 14 && c == 14) // r15c15 in 1-based
-                            let ch = grid.chars[r][c]
-                            let display = ch.isEmpty ? "·" : ch
+            // Base cell size so the entire grid is visible initially
+            let baseCell = side / CGFloat(grid.cols)
+            let baseSide = baseCell * CGFloat(grid.cols)
+            let contentSize = CGSize(width: baseSide, height: baseSide)
 
-                            let sgColor = colorMap.colorFor(r0: r, c0: c)
-                            let baseBg = sgColor.background
-                            let baseText = sgColor.text
+            // Effective scale/offset (while gesture is active)
+            let effectiveScale = clamp(gridScale * pinchScale, minScale, maxScale)
 
-                            Text(display)
-                                .font(.system(size: size * 0.9, weight: .regular, design: .default))
-                                .frame(width: size, height: size)
-                                .foregroundStyle(ch.isEmpty ? .secondary : baseText)
-                                .background(baseBg)
-                                .overlay {
-                                    if isSelected {
-                                        // selection tint on top of the base color
-                                        Rectangle().fill(Color.white.opacity(0.20))
-                                    }
+            let proposedOffset = CGSize(
+                width: gridOffset.width + panDrag.width,
+                height: gridOffset.height + panDrag.height
+            )
+            let effectiveOffset = clampedOffset(
+                proposedOffset,
+                scale: effectiveScale,
+                viewport: viewport,
+                content: contentSize
+            )
+
+            // Pan gesture (one finger drag)
+            let pan = DragGesture(minimumDistance: 5)
+                .updating($panDrag) { value, state, _ in
+                    state = value.translation
+                }
+                .onEnded { value in
+                    let proposed = CGSize(
+                        width: gridOffset.width + value.translation.width,
+                        height: gridOffset.height + value.translation.height
+                    )
+                    gridOffset = clampedOffset(proposed, scale: gridScale, viewport: viewport, content: contentSize)
+                }
+
+            // Pinch gesture
+            let zoom = MagnificationGesture()
+                .updating($pinchScale) { value, state, _ in
+                    state = value
+                }
+                .onEnded { value in
+                    gridScale = clamp(gridScale * value, minScale, maxScale)
+                    gridOffset = clampedOffset(gridOffset, scale: gridScale, viewport: viewport, content: contentSize)
+                }
+
+            // Selection gesture: long-press then drag (so normal drags pan)
+            let select = LongPressGesture(minimumDuration: 0.15)
+                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+                .onChanged { seq in
+                    switch seq {
+                    case .second(true, let drag?):
+                        // Convert touch location in the viewport into unscaled/unpanned grid space
+                        let p = drag.location
+                        let unscaled = CGPoint(
+                            x: (p.x - effectiveOffset.width) / effectiveScale,
+                            y: (p.y - effectiveOffset.height) / effectiveScale
+                        )
+
+                        if let pos = posFrom(point: unscaled, rows: grid.rows, cols: grid.cols, cell: baseCell) {
+                            if startPos == nil {
+                                startPos = pos
+                                currentPos = pos
+                                selectedPath = [pos]
+                            } else {
+                                currentPos = pos
+                                if let s = startPos {
+                                    selectedPath = selectionPath(from: s, to: pos)
                                 }
-                                .overlay {
-                                    if showGridLines {
-                                        Rectangle()
-                                            .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5)
-                                    }
-                                }
-                                .overlay {
-                                    if isCenter {
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .strokeBorder(Color.white.opacity(0.9), lineWidth: 2.5)
-                                    }
-                                }
+                            }
                         }
+
+                    default:
+                        break
+                    }
+                }
+
+            ZStack(alignment: .topLeading) {
+                // Grid content
+                gridContent(grid, cell: baseCell, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
+                    // Selection uses long-press -> drag; give it priority over pan if it activates
+                    .highPriorityGesture(select)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(pan)
+            .simultaneousGesture(zoom)
+            .onAppear {
+                // Center grid initially if we haven’t already positioned it
+                if gridOffset == .zero && gridScale == 1.0 {
+                    gridOffset = centeredOffset(scale: gridScale, viewport: viewport, content: contentSize)
+                }
+            }
+        }
+    }
+
+    private func gridContent(_ grid: XuanjiGrid, cell: CGFloat, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
+        let baseSide = cell * CGFloat(grid.cols)
+
+        return VStack(spacing: 0) {
+            ForEach(0..<grid.rows, id: \.self) { r in
+                HStack(spacing: 0) {
+                    ForEach(0..<grid.cols, id: \.self) { c in
+                        let pos = GridPos(r: r, c: c)
+                        let isSelected = selectedPath.contains(pos)
+                        let isCenter = (r == 14 && c == 14)
+                        let ch = grid.chars[r][c]
+                        let display = ch.isEmpty ? "·" : ch
+
+                        let sgColor = colorMap.colorFor(r0: r, c0: c)
+
+                        Text(display)
+                            .font(.system(size: cell * 0.9, weight: .regular))
+                            .frame(width: cell, height: cell)
+                            .foregroundStyle(ch.isEmpty ? .secondary : sgColor.text)
+                            .background(sgColor.background)
+                            .overlay {
+                                if isSelected { Rectangle().fill(Color.white.opacity(0.20)) }
+                            }
+                            .overlay {
+                                if showGridLines {
+                                    Rectangle().strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5)
+                                }
+                            }
+                            .overlay {
+                                if isCenter {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .strokeBorder(Color.white.opacity(0.9), lineWidth: 2.5)
+                                }
+                            }
                     }
                 }
             }
-            .frame(width: CGFloat(grid.cols) * size, height: effectiveH, alignment: .topLeading)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let pos = posFrom(
-                            point: value.location,
-                            in: geo.size,
-                            rows: grid.rows,
-                            cols: grid.cols,
-                            cell: size
-                        )
-                        guard let pos else { return }
-
-                        if startPos == nil {
-                            startPos = pos
-                            currentPos = pos
-                            selectedPath = [pos]
-                        } else {
-                            currentPos = pos
-                            if let s = startPos {
-                                selectedPath = selectionPath(from: s, to: pos)
-                            }
-                        }
-                    }
-            )
         }
-        // Keep a stable height; the content itself sizes to the computed `size`.
-        .frame(height: CGFloat(29) * cellSize)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-        )
+        .frame(width: baseSide, height: baseSide, alignment: .topLeading)
+        .scaleEffect(effectiveScale, anchor: .topLeading)
+        .offset(effectiveOffset)
     }
+
+    // MARK: - Selection panel (unchanged)
 
     private func selectionPanel(_ grid: XuanjiGrid) -> some View {
         let s = startPos
@@ -514,21 +644,62 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Coordinate mapping (fixed: uses actual rendered cell size)
+    // MARK: - Touch -> grid position mapping (grid local coordinates)
 
-    private func posFrom(point: CGPoint, in size: CGSize, rows: Int, cols: Int, cell: CGFloat) -> GridPos? {
-        let effectiveH = CGFloat(rows) * cell
-        let clampedX = min(max(point.x, 0), CGFloat(cols) * cell - 0.001)
-        let clampedY = min(max(point.y, 0), effectiveH - 0.001)
+    private func posFrom(point: CGPoint, rows: Int, cols: Int, cell: CGFloat) -> GridPos? {
+        let x = point.x
+        let y = point.y
+        guard x >= 0, y >= 0 else { return nil }
 
-        let c = Int(clampedX / cell)
-        let r = Int(clampedY / cell)
+        let c = Int(x / cell)
+        let r = Int(y / cell)
 
         guard r >= 0, r < rows, c >= 0, c < cols else { return nil }
         return GridPos(r: r, c: c)
     }
 
-    // MARK: - Load
+    // MARK: - Clamp + centering helpers
+
+    private func clamp<T: Comparable>(_ v: T, _ lo: T, _ hi: T) -> T {
+        min(max(v, lo), hi)
+    }
+
+    private func centeredOffset(scale: CGFloat, viewport: CGSize, content: CGSize) -> CGSize {
+        let cw = content.width * scale
+        let ch = content.height * scale
+
+        let x = (viewport.width - cw) / 2
+        let y = (viewport.height - ch) / 2
+
+        // If content is larger than viewport, default to top-left (0,0)
+        return CGSize(width: cw <= viewport.width ? x : 0,
+                      height: ch <= viewport.height ? y : 0)
+    }
+
+    private func clampedOffset(_ proposed: CGSize, scale: CGFloat, viewport: CGSize, content: CGSize) -> CGSize {
+        let cw = content.width * scale
+        let ch = content.height * scale
+
+        let x: CGFloat
+        if cw <= viewport.width {
+            x = (viewport.width - cw) / 2
+        } else {
+            let minX = viewport.width - cw
+            x = clamp(proposed.width, minX, 0)
+        }
+
+        let y: CGFloat
+        if ch <= viewport.height {
+            y = (viewport.height - ch) / 2
+        } else {
+            let minY = viewport.height - ch
+            y = clamp(proposed.height, minY, 0)
+        }
+
+        return CGSize(width: x, height: y)
+    }
+
+    // MARK: - Load (unchanged)
 
     @MainActor
     private func load() async {
@@ -540,8 +711,6 @@ struct ContentView: View {
             self.grid = try XuanjiGridBuilder.fromCSVText(gridText, expectedSize: 29)
 
             phrases.loadFromCSV(named: "xuanji_phrases")
-
-            // IMPORTANT: Add `xuanji_tu_cell_colors_v3.json` to your bundle resources.
             colorMap.loadFromJSON(named: "xuanji_tu_cell_colors_v3")
 
             self.loadError = nil
@@ -553,88 +722,8 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Xcode Preview (local data so you always see characters)
+// MARK: - Preview
 
-#if DEBUG
-private func makePreviewGrid() -> XuanjiGrid {
-    let n = 29
-    var g = Array(repeating: Array(repeating: "　", count: n), count: n)
-
-    let samples = Array("天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏")
-    for r in 0..<n {
-        for c in 0..<n {
-            g[r][c] = String(samples[(r * n + c) % samples.count])
-        }
-    }
-    g[14][14] = "心"
-    return XuanjiGrid(rows: n, cols: n, chars: g)
-}
-
-#if DEBUG
-#Preview("Star Gauge - ContentView") {
+#Preview("Star Gauge - Splash then Main") {
     ContentView()
-        .padding()
 }
-#endif
-
-private struct ContentView_PreviewHost: View {
-    @State private var injectedGrid = makePreviewGrid()
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("Preview Host")
-                .font(.headline)
-            PreviewGridView(grid: injectedGrid)
-        }
-    }
-}
-
-private struct PreviewGridView: View {
-    let grid: XuanjiGrid
-    @State private var cellSize: CGFloat = 28
-    @State private var showGridLines = true
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Toggle("Grid", isOn: $showGridLines).toggleStyle(.switch)
-
-            GeometryReader { geo in
-                let totalW = geo.size.width
-                let size = min(cellSize, (totalW - 8) / CGFloat(grid.cols))
-
-                VStack(spacing: 0) {
-                    ForEach(0..<grid.rows, id: \.self) { r in
-                        HStack(spacing: 0) {
-                            ForEach(0..<grid.cols, id: \.self) { c in
-                                let isCenter = (r == 14 && c == 14)
-                                let ch = grid.chars[r][c]
-                                Text(ch.isEmpty ? "·" : ch)
-                                    .font(.system(size: size * 0.9))
-                                    .frame(width: size, height: size)
-                                    .overlay {
-                                        if showGridLines {
-                                            Rectangle()
-                                                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5)
-                                        }
-                                    }
-                                    .overlay {
-                                        if isCenter {
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .strokeBorder(Color.primary.opacity(0.8), lineWidth: 2.5)
-                                        }
-                                    }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(height: 29 * cellSize)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-            )
-        }
-    }
-}
-#endif
